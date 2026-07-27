@@ -1,0 +1,25 @@
+# Dependencies (installed fresh in Docker)
+node_modules
+
+# Next.js build output (rebuilt in Docker)
+.next
+
+# Local database file (Railway uses a volume at /data)
+prisma/dev.db
+prisma/*.db-journal
+
+# Secrets (set as Railway env vars, never baked into image)
+.env
+.env.local
+.env.production
+
+# Development files
+.git
+.gitignore
+README.md
+SETUP.md
+*.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
