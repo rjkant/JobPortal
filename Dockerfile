@@ -37,9 +37,8 @@ COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 # Copy node_modules needed at runtime (Playwright, node-cron, prisma, etc.)
 COPY --from=builder /app/node_modules ./node_modules
 
-# Persistent data directory (mount a Railway volume here)
+# Create the data directory — Railway will mount its Volume here via the dashboard
 RUN mkdir -p /data
-VOLUME ["/data"]
 
 EXPOSE 3000
 
