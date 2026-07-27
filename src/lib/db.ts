@@ -4,7 +4,7 @@
  * @prisma/adapter-libsql adapter for SQLite file-based databases.
  */
 import { PrismaClient } from '@prisma/client';
-import { PrismaLibSQL } from '@prisma/adapter-libsql';
+import { PrismaLibSql } from '@prisma/adapter-libsql';
 import { createClient } from '@libsql/client';
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
@@ -15,7 +15,7 @@ function createPrismaClient(): PrismaClient {
   // Local dev:      "file:./prisma/dev.db"
   const url = process.env.DATABASE_URL ?? 'file:./prisma/dev.db';
   const libsql = createClient({ url });
-  const adapter = new PrismaLibSQL(libsql);
+  const adapter = new PrismaLibSql(libsql);
 
   return new PrismaClient({
     adapter,
