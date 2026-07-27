@@ -1,11 +1,28 @@
+/**
+ * Prisma v7 requires a driver adapter for all database connections.
+ * We use @libsql/client (pure JS, works on any platform) with the
+ * @prisma/adapter-libsql adapter for SQLite file-based databases.
+ */
 import { PrismaClient } from '@prisma/client';
+import { PrismaLibSQL } from '@prisma/adapter-libsql';
+import { createClient } from '@libsql/client';
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 
-export const prisma =
-  globalForPrisma.prisma ||
-  new PrismaClient({
+function createPrismaClient(): PrismaClient {
+  // DATABASE_URL must be in libsql format: "file:./path/to/db.sqlite"
+  // Railway volume: "file:/data/prod.db"
+  // Local dev:      "file:./prisma/dev.db"
+  const url = process.env.DATABASE_URL ?? 'file:./prisma/dev.db';
+  const libsql = createClient({ url });
+  const adapter = new PrismaLibSQL(libsql);
+
+  return new PrismaClient({
+    adapter,
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   });
+}
+
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;

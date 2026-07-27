@@ -45,9 +45,9 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies (cached layer)
+# Install dependencies (use npm install, not ci, so added packages are resolved)
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Download Playwright's Chromium browser
 RUN npx playwright install chromium
