@@ -1,18 +1,8 @@
 import { BaseScraper, ScrapedJob } from './base';
 
-const TEXT_TIMEOUT = 5000; // max ms to wait for any text element
-
 export class InstaHireScraper extends BaseScraper {
   get platform() {
     return 'instahire';
-  }
-
-  private async getText(locator: import('playwright').Locator): Promise<string> {
-    try {
-      return (await locator.textContent({ timeout: TEXT_TIMEOUT }))?.trim() ?? '';
-    } catch {
-      return '';
-    }
   }
 
   async scrapeJobs(keywords: string[], location: string): Promise<ScrapedJob[]> {
@@ -29,66 +19,112 @@ export class InstaHireScraper extends BaseScraper {
       // ── Login ──────────────────────────────────────────────────────────────
       await this.log('info', 'InstaHire: Logging in');
       await this.page!.goto('https://www.instahyre.com/login/', {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'networkidle',
         timeout: 30000,
       });
-      await this.randomDelay(1500, 2500);
+      await this.randomDelay(1000, 2000);
 
       const emailField = this.page!.locator('input[type="email"], input[name="email"]').first();
-      if (await emailField.isVisible({ timeout: 5000 }).catch(() => false)) {
+      const hasEmail = await emailField.isVisible({ timeout: 5000 }).catch(() => false);
+
+      if (hasEmail) {
         await emailField.fill(cred.email);
-        await this.randomDelay(500, 1000);
+        await this.randomDelay(400, 800);
         await this.page!.locator('input[type="password"]').first().fill(cred.password);
-        await this.randomDelay(500, 1000);
+        await this.randomDelay(400, 800);
         await this.page!.locator('button[type="submit"]').first().click();
-        await this.page!.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+        // Wait for SPA navigation (networkidle catches React state changes)
+        await this.page!.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        await this.randomDelay(1000, 2000);
       }
 
-      // ── Scrape opportunities ───────────────────────────────────────────────
+      // Verify we are logged in
+      const currentUrl = this.page!.url();
+      await this.log('info', `InstaHire: Post-login URL: ${currentUrl}`);
+
+      // ── Navigate to opportunities ─────────────────────────────────────────
       for (const keyword of keywords.slice(0, 2)) {
         await this.log('info', `InstaHire: Searching "${keyword}"`);
         await this.page!.goto('https://www.instahyre.com/candidate/opportunities/', {
-          waitUntil: 'domcontentloaded',
+          waitUntil: 'networkidle',
           timeout: 30000,
         });
         await this.randomDelay(2000, 3000);
 
-        // Try multiple selectors for job cards
-        let cards = await this.page!.locator('.opportunity-card').all();
-        if (cards.length === 0) cards = await this.page!.locator('.job-card').all();
-        if (cards.length === 0) cards = await this.page!.locator('[class*="opportunityCard"], [class*="opportunity-card"], [class*="jobCard"]').all();
+        const pageTitle = await this.page!.title();
+        await this.log('info', `InstaHire: Page title: "${pageTitle}"`);
 
-        await this.log('info', `InstaHire: Found ${cards.length} opportunities`);
-        if (cards.length === 0) {
-          await this.log('warn', 'InstaHire: No job cards found — login may have failed or page structure changed');
+        // Use page.evaluate to inspect real DOM and extract jobs
+        const extracted = await this.page!.evaluate(() => {
+          // Log first 300 chars of body for debugging
+          const bodySnippet = document.body.innerHTML.substring(0, 300);
+
+          // Try many possible card selectors
+          const cardSelectors = [
+            '.opportunity-card',
+            '.job-card',
+            '[class*="opportunity-card"]',
+            '[class*="OpportunityCard"]',
+            '[class*="job-card"]',
+            '[class*="JobCard"]',
+            '[data-cy*="opportunity"]',
+            '[data-cy*="job"]',
+            '.card',
+          ];
+
+          let cards: Element[] = [];
+          for (const sel of cardSelectors) {
+            const found = Array.from(document.querySelectorAll(sel));
+            if (found.length > 0) { cards = found; break; }
+          }
+
+          const results = cards.slice(0, 10).map(card => {
+            // Grab first heading-like element
+            const titleEl = card.querySelector('h1, h2, h3, h4, h5, [class*="title"], [class*="role"], [class*="position"], [class*="designation"]');
+            // Grab company — usually the first non-heading text node
+            const companyEl = card.querySelector('[class*="company"], [class*="employer"], [class*="org"], p, span');
+            const linkEl = card.querySelector('a[href]');
+
+            return {
+              title: titleEl?.textContent?.trim() ?? '',
+              company: companyEl?.textContent?.trim() ?? '',
+              href: linkEl?.getAttribute('href') ?? '',
+              sampleHTML: card.outerHTML.substring(0, 400),
+            };
+          });
+
+          return { bodySnippet, cardCount: cards.length, cardSelector: cardSelectors.find(s => document.querySelector(s)), results };
+        });
+
+        await this.log('info', `InstaHire: Cards found: ${extracted.cardCount} (selector: ${extracted.cardSelector ?? 'none'})`);
+        if (extracted.cardCount === 0) {
+          await this.log('warn', `InstaHire: DOM snippet: ${extracted.bodySnippet.substring(0, 200)}`);
           continue;
         }
 
-        for (const card of cards.slice(0, 10)) {
-          try {
-            // Use short timeouts so we never hang 30s on a missing element
-            const title   = await this.getText(card.locator('h2, h3, .title, [class*="title"]').first());
-            const company = await this.getText(card.locator('.company-name, [class*="company"]').first());
-            const loc     = await this.getText(card.locator('.location, [class*="location"]').first());
-            const linkEl  = card.locator('a').first();
-            const href    = await linkEl.getAttribute('href', { timeout: TEXT_TIMEOUT }).catch(() => '') ?? '';
+        // Log first card HTML for selector debugging
+        if (extracted.results[0]) {
+          await this.log('info', `InstaHire: First card HTML: ${extracted.results[0].sampleHTML.substring(0, 250)}`);
+        }
+
+        for (const item of extracted.results) {
+          if (item.title && item.company) {
+            const href = item.href;
             const applyUrl = href.startsWith('http') ? href : `https://www.instahyre.com${href}`;
             const externalId = href.match(/[0-9a-f-]{8,}/)?.[0] ?? Math.random().toString(36).slice(2);
-
-            if (title && company) {
-              jobs.push({
-                externalId,
-                title,
-                company,
-                location: loc || location,
-                skills: [],
-                description: `${title} at ${company}. Location: ${loc || location}`,
-                applyUrl,
-              });
-            }
-          } catch { /* skip individual card */ }
+            jobs.push({
+              externalId,
+              title: item.title,
+              company: item.company,
+              location,
+              skills: [],
+              description: `${item.title} at ${item.company}`,
+              applyUrl,
+            });
+          }
         }
-        await this.randomDelay(1500, 3000);
+
+        await this.randomDelay(1500, 2500);
       }
     } catch (err) {
       await this.log('error', `InstaHire scraper error: ${(err as Error).message}`);
@@ -105,9 +141,9 @@ export class InstaHireScraper extends BaseScraper {
       await this.page!.goto(job.applyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await this.randomDelay(2000, 3000);
 
-      const applyBtn = this.page!.locator(
-        'button:has-text("Apply"), button:has-text("Express Interest"), a:has-text("Apply")'
-      ).first();
+      const applyBtn = this.page!
+        .locator('button:has-text("Apply"), button:has-text("Express Interest"), a:has-text("Apply")')
+        .first();
       if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
         await applyBtn.click();
         await this.randomDelay(2000, 4000);
