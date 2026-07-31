@@ -10,79 +10,53 @@ export class NaukriScraper extends BaseScraper {
     const jobs: ScrapedJob[] = [];
 
     try {
-      const cred = await this.getCredential();
-      if (!cred) {
-        await this.log('error', 'Naukri: No credentials found');
-        return jobs;
-      }
-
-      await this.log('info', 'Naukri: Navigating to login page');
-      await this.page!.goto('https://www.naukri.com/nlogin/login', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-
-      // Check if already logged in
-      const isLoggedIn = await this.page!
-        .locator('[class*="naukri-logo"]')
-        .isVisible()
-        .catch(() => false);
-
-      if (!isLoggedIn) {
-        await this.log('info', 'Naukri: Logging in');
-        await this.page!.fill('#usernameField', cred.email);
-        await this.randomDelay(500, 1000);
-        await this.page!.fill('#passwordField', cred.password);
-        await this.randomDelay(500, 1000);
-        await this.page!.click('button[type="submit"]');
-        await this.page!.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 });
-      }
-
+      // Naukri's search is fully public — no login needed for listing scraping.
+      // We use direct search URLs to avoid bot-detection on the login page.
       await this.log('info', `Naukri: Searching for "${keywords.join(', ')}" in "${location}"`);
 
       for (const keyword of keywords.slice(0, 3)) {
-        const searchUrl = `https://www.naukri.com/${encodeURIComponent(keyword.toLowerCase().replace(/\s+/g, '-'))}-jobs-in-${encodeURIComponent(location.toLowerCase().replace(/\s+/g, '-'))}?experience=0&jobAge=7`;
+        const slug = keyword.toLowerCase().replace(/\s+/g, '-');
+        const locSlug = location.toLowerCase().replace(/[\s,]+/g, '-');
+        const searchUrl =
+          `https://www.naukri.com/${encodeURIComponent(slug)}-jobs-in-${encodeURIComponent(locSlug)}?jobAge=7`;
 
         await this.page!.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await this.randomDelay(2000, 4000);
 
-        const jobCards = await this.page!.locator('article.jobTuple').all();
+        // Current Naukri selector (as of 2026): .srp-jobtuple-wrapper
+        const jobCards = await this.page!.locator('.srp-jobtuple-wrapper').all();
         await this.log('info', `Naukri: Found ${jobCards.length} job cards for "${keyword}"`);
 
         for (const card of jobCards.slice(0, 15)) {
           try {
-            const titleEl = card.locator('.title');
-            const companyEl = card.locator('.comp-name');
-            const locationEl = card.locator('.locWdth');
-            const expEl = card.locator('.expwdth');
-            const salaryEl = card.locator('.salary');
-            const linkEl = card.locator('a.title');
-            const skillsEl = card.locator('.tags li');
+            const title   = (await card.locator('.title').textContent())?.trim() ?? '';
+            const company = (await card.locator('.comp-name').textContent())?.trim() ?? '';
+            const loc     = (await card.locator('.locWdth').first().textContent())?.trim() ?? '';
+            const exp     = (await card.locator('.expwdth').first().textContent())?.trim() ?? '';
+            const desc    = (await card.locator('.row4').textContent())?.trim() ?? '';
+            const salary  = (await card.locator('.salary').textContent().catch(() => ''))?.trim() ?? '';
+            const applyUrl = (await card.locator('a.title').getAttribute('href')) ?? '';
 
-            const title = (await titleEl.textContent())?.trim() ?? '';
-            const company = (await companyEl.textContent())?.trim() ?? '';
-            const loc = (await locationEl.textContent())?.trim() ?? '';
-            const exp = (await expEl.textContent())?.trim() ?? '';
-            const salaryStr = (await salaryEl.textContent())?.trim() ?? '';
-            const applyUrl = (await linkEl.getAttribute('href')) ?? '';
-            const externalId = applyUrl.match(/(\d+)/)?.[1] ?? Math.random().toString(36).slice(2);
+            // Skills: .tag-li (replaced old .tags li)
+            const skillEls = await card.locator('.tag-li').allTextContents();
+            const skills = skillEls.map(s => s.trim()).filter(Boolean);
 
-            const skillTexts = await skillsEl.allTextContents();
-            const skills = skillTexts.map(s => s.trim()).filter(Boolean);
+            const externalId =
+              applyUrl.match(/(\d{10,})/)?.[1] ?? Math.random().toString(36).slice(2);
 
-            const salary = this.parseSalary(salaryStr);
+            const parsedSalary = this.parseSalary(salary);
 
             if (title && company && applyUrl) {
               jobs.push({
                 externalId,
                 title,
                 company,
-                location: loc,
+                location: loc || location,
                 experience: exp,
                 skills,
-                description: `${title} at ${company}. ${exp ? `Experience: ${exp}.` : ''} Skills: ${skills.join(', ')}`,
+                description: desc || `${title} at ${company}. ${exp ? `Experience: ${exp}.` : ''} Skills: ${skills.join(', ')}`,
                 applyUrl: applyUrl.startsWith('http') ? applyUrl : `https://www.naukri.com${applyUrl}`,
-                ...salary,
+                ...parsedSalary,
               });
             }
           } catch {
@@ -103,15 +77,36 @@ export class NaukriScraper extends BaseScraper {
   async applyToJob(job: ScrapedJob, coverLetter: string): Promise<boolean> {
     await this.launchBrowser();
     try {
+      // Login is required only when applying
+      const cred = await this.getCredential();
+      if (!cred) {
+        await this.log('error', 'Naukri: No credentials found for applying');
+        return false;
+      }
+
+      // Navigate to login
+      await this.page!.goto('https://www.naukri.com/nlogin/login', {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+
+      // Wait for the email field (it's a React-rendered input)
+      const emailField = this.page!.locator('#usernameField');
+      await emailField.waitFor({ state: 'visible', timeout: 20000 });
+      await emailField.fill(cred.email);
+      await this.randomDelay(500, 1000);
+
+      await this.page!.fill('#passwordField', cred.password);
+      await this.randomDelay(500, 1000);
+      await this.page!.click('button[type="submit"]');
+      await this.page!.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+
       await this.log('info', `Naukri: Applying to "${job.title}" at ${job.company}`);
       await this.page!.goto(job.applyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await this.randomDelay(2000, 3000);
 
-      // Look for "Apply" button
       const applyBtn = this.page!.locator('button:has-text("Apply"), a:has-text("Apply Now")').first();
-      const btnVisible = await applyBtn.isVisible().catch(() => false);
-
-      if (!btnVisible) {
+      if (!(await applyBtn.isVisible().catch(() => false))) {
         await this.log('warn', `Naukri: Apply button not found for "${job.title}"`);
         return false;
       }
@@ -119,29 +114,23 @@ export class NaukriScraper extends BaseScraper {
       await applyBtn.click();
       await this.randomDelay(2000, 4000);
 
-      // Handle multi-step application if needed
       const nextBtn = this.page!.locator('button:has-text("Next"), button:has-text("Submit")').first();
-      const nextVisible = await nextBtn.isVisible().catch(() => false);
-      if (nextVisible) {
+      if (await nextBtn.isVisible().catch(() => false)) {
         await nextBtn.click();
         await this.randomDelay(1500, 2500);
       }
 
-      // Cover letter field
       const coverField = this.page!.locator('textarea[name*="cover"], textarea[placeholder*="cover"]').first();
-      const coverVisible = await coverField.isVisible().catch(() => false);
-      if (coverVisible) {
+      if (await coverField.isVisible().catch(() => false)) {
         await coverField.fill(coverLetter);
         await this.randomDelay(500, 1000);
       }
 
-      // Final submit
       const submitBtn = this.page!.locator('button:has-text("Submit"), button:has-text("Apply")').first();
-      const submitVisible = await submitBtn.isVisible().catch(() => false);
-      if (submitVisible) {
+      if (await submitBtn.isVisible().catch(() => false)) {
         await submitBtn.click();
         await this.randomDelay(2000, 3000);
-        await this.log('info', `Naukri: Successfully applied to "${job.title}" at ${job.company}`);
+        await this.log('info', `Naukri: Applied to "${job.title}" at ${job.company}`);
         return true;
       }
 
