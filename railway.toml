@@ -1,12 +1,10 @@
 [build]
-# Railway auto-detects the Dockerfile in the root
 dockerfile = "Dockerfile"
 
 [deploy]
-# Wait for the server to be ready before marking deployment healthy
-healthcheckPath = "/"
-healthcheckTimeout = 60
+# Give the server plenty of time to run prisma push + boot Next.js
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
 
-# Restart the container automatically if it crashes
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
