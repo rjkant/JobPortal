@@ -11,11 +11,16 @@ export async function initScheduler() {
   // Only run in server context (not during Next.js build)
   if (typeof window !== 'undefined') return;
 
-  const settings = await prisma.settings.findMany();
-  const settingsMap: Record<string, string> = {};
-  for (const s of settings) settingsMap[s.key] = s.value;
+  let cronExpr = '0 */6 * * *';
+  try {
+    const settings = await prisma.settings.findMany();
+    const settingsMap: Record<string, string> = {};
+    for (const s of settings) settingsMap[s.key] = s.value;
+    cronExpr = settingsMap['automation_schedule'] ?? cronExpr;
+  } catch (err) {
+    console.error('[Scheduler] Failed to load settings from DB, using default schedule:', err);
+  }
 
-  const cronExpr = settingsMap['automation_schedule'] ?? '0 */6 * * *';
   startScheduler(cronExpr);
 }
 

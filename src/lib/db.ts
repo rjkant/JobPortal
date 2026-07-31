@@ -5,15 +5,17 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { PrismaLibSql } from '@prisma/adapter-libsql';
+import { createClient } from '@libsql/client';
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 
 function createPrismaClient(): PrismaClient {
-  // DATABASE_URL must be in libsql format: "file:./path/to/db.sqlite"
+  // DATABASE_URL must be in libsql format: "file:/absolute/path.db" or "file:relative/path.db"
   // Railway volume: "file:/data/prod.db"
   // Local dev:      "file:./prisma/dev.db"
   const url = process.env.DATABASE_URL ?? 'file:./prisma/dev.db';
-  const adapter = new PrismaLibSql({ url });
+  const libsql = createClient({ url });
+  const adapter = new PrismaLibSql(libsql);
 
   return new PrismaClient({
     adapter,
