@@ -12,7 +12,8 @@ function createPrismaClient(): PrismaClient {
   // DATABASE_URL must be in libsql format: "file:/absolute/path.db" or "file:relative/path.db"
   // Railway volume: "file:/data/prod.db"
   // Local dev:      "file:./prisma/dev.db"
-  const url = process.env.DATABASE_URL ?? 'file:./prisma/dev.db';
+  // Use an absolute path as the fallback so it matches startup.sh's default
+  const url = process.env.DATABASE_URL ?? 'file:///app/prisma/dev.db';
   const adapter = new PrismaLibSql({ url });
 
   return new PrismaClient({

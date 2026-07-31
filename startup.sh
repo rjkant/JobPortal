@@ -1,18 +1,22 @@
 #!/bin/sh
 set -e
 
-# Default DATABASE_URL if not set by Railway (ephemeral SQLite — data lost on restart)
-# For persistent data, set DATABASE_URL=file:/data/prod.db and add a Railway Volume at /data
-export DATABASE_URL="${DATABASE_URL:-file:./prisma/dev.db}"
-
-# Bind to all interfaces so Railway's health check can reach us
+# ── Database URL ────────────────────────────────────────────────────────────
+# Use absolute path so both the init script and runtime prisma adapter agree.
+# Set DATABASE_URL in Railway's env vars panel for a persistent volume:
+#   DATABASE_URL=file:///data/prod.db  (and mount a Railway Volume at /data)
+export DATABASE_URL="${DATABASE_URL:-file:///app/prisma/dev.db}"
 export HOSTNAME="0.0.0.0"
 
 echo "==> DATABASE_URL: $DATABASE_URL"
-echo "==> Running Prisma migrations..."
-node node_modules/prisma/build/index.js db push --skip-generate || {
-  echo "Warning: prisma db push failed, continuing anyway..."
-}
 
-echo "==> Starting JobPilot server on port ${PORT:-3000}..."
+# ── Create DB directory if needed ───────────────────────────────────────────
+mkdir -p /app/prisma
+
+# ── Initialise schema (CREATE TABLE IF NOT EXISTS) ───────────────────────────
+echo "==> Initialising database schema..."
+node scripts/init-db.mjs
+
+# ── Start Next.js ────────────────────────────────────────────────────────────
+echo "==> Starting JobPilot on port ${PORT:-3000}..."
 exec node server.js

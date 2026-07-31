@@ -131,4 +131,7 @@ EXPOSE 3000
 COPY startup.sh ./startup.sh
 RUN chmod +x ./startup.sh
 
+# DB init script (bypasses prisma db push, uses @libsql/client directly)
+COPY --from=builder /app/scripts ./scripts
+
 CMD ["./startup.sh"]
