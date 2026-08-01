@@ -142,6 +142,98 @@ try {
 } catch (err) {
   console.error('[init-db] FAILED:', err);
   process.exit(1);
-} finally {
-  db.close();
 }
+
+// ── Auto-seed default user from env vars ────────────────────────────────────
+// Set SEED_EMAIL, SEED_PASSWORD, SEED_NAME in Railway env vars.
+// On every deploy the user + profile are recreated if they don't exist.
+const seedEmail    = process.env.SEED_EMAIL;
+const seedPassword = process.env.SEED_PASSWORD;
+const seedName     = process.env.SEED_NAME ?? 'Admin';
+
+if (seedEmail && seedPassword) {
+  try {
+    // Check if user already exists
+    const existing = await db.execute({
+      sql: 'SELECT id FROM "User" WHERE email = ?',
+      args: [seedEmail],
+    });
+
+    if (existing.rows.length === 0) {
+      // Hash password with bcryptjs (pure JS, no native deps)
+      const { createRequire } = await import('module');
+      const require = createRequire(import.meta.url);
+      const bcrypt = require('bcryptjs');
+      const hash = await bcrypt.hash(seedPassword, 12);
+
+      // Generate a CUID-style id
+      const userId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+      const profileId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+
+      await db.execute({
+        sql: `INSERT INTO "User" (id, name, email, passwordHash, createdAt, updatedAt)
+              VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        args: [userId, seedName, seedEmail, hash],
+      });
+
+      console.log(`[init-db] Seeded user: ${seedEmail}`);
+
+      // Seed profile if SEED_PROFILE env var is set (JSON string)
+      const profileJson = process.env.SEED_PROFILE;
+      if (profileJson) {
+        try {
+          const p = JSON.parse(profileJson);
+          await db.execute({
+            sql: `INSERT INTO "UserProfile"
+                    (id, userId, fullName, email, phone, location, totalExperience,
+                     currentRole, skills, desiredRoles, preferredLocs, expectedCTC,
+                     noticePeriod, linkedinUrl, summary, createdAt, updatedAt)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            args: [
+              profileId,
+              userId,
+              p.fullName     ?? seedName,
+              p.email        ?? seedEmail,
+              p.phone        ?? '',
+              p.location     ?? '',
+              p.totalExperience ?? 0,
+              p.currentRole  ?? '',
+              JSON.stringify(p.skills        ?? []),
+              JSON.stringify(p.desiredRoles  ?? []),
+              JSON.stringify(p.preferredLocs ?? []),
+              p.expectedCTC  ?? '',
+              p.noticePeriod ?? '',
+              p.linkedinUrl  ?? null,
+              p.summary      ?? '',
+            ],
+          });
+          console.log('[init-db] Seeded user profile ✓');
+
+          // Seed platform credentials if provided
+          const credJson = process.env.SEED_CREDENTIALS;
+          if (credJson) {
+            const creds = JSON.parse(credJson); // [{platform,email,password}]
+            for (const cred of creds) {
+              const credId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+              await db.execute({
+                sql: `INSERT OR IGNORE INTO "PlatformCredential"
+                        (id, userId, platform, email, password, isActive, createdAt, updatedAt)
+                      VALUES (?,?,?,?,?,1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                args: [credId, userId, cred.platform, cred.email, cred.password],
+              });
+            }
+            console.log(`[init-db] Seeded ${creds.length} platform credential(s) ✓`);
+          }
+        } catch (e) {
+          console.warn('[init-db] Profile seed failed:', e.message);
+        }
+      }
+    } else {
+      console.log(`[init-db] User ${seedEmail} already exists — skipping seed`);
+    }
+  } catch (e) {
+    console.warn('[init-db] Auto-seed error (non-fatal):', e.message);
+  }
+}
+
+db.close();
