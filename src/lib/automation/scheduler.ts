@@ -8,15 +8,15 @@ let scheduledTask: any = null;
 let currentCronExpr = '';
 
 export async function initScheduler() {
-  // Only run in server context (not during Next.js build)
   if (typeof window !== 'undefined') return;
 
   let cronExpr = '0 */6 * * *';
   try {
-    const settings = await prisma.settings.findMany();
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) settingsMap[s.key] = s.value;
-    cronExpr = settingsMap['automation_schedule'] ?? cronExpr;
+    // Use the first available schedule setting (any user's)
+    const setting = await prisma.settings.findFirst({
+      where: { key: 'automation_schedule' },
+    });
+    cronExpr = setting?.value ?? cronExpr;
   } catch (err) {
     console.error('[Scheduler] Failed to load settings from DB, using default schedule:', err);
   }
@@ -39,23 +39,42 @@ export function startScheduler(cronExpr: string) {
   console.log(`[Scheduler] Starting with schedule: ${cronExpr}`);
 
   scheduledTask = cron.schedule(cronExpr, async () => {
-    console.log('[Scheduler] Triggering automation run...');
+    console.log('[Scheduler] Triggering automation runs for all active users...');
     try {
-      const credentials = await prisma.platformCredential.findMany({ where: { isActive: true } });
-      if (credentials.length === 0) {
-        console.log('[Scheduler] No active credentials, skipping run');
+      // Find all users that have at least one active credential
+      const activeCredentials = await prisma.platformCredential.findMany({
+        where: { isActive: true },
+        select: { userId: true, platform: true },
+      });
+
+      // Group by userId
+      const byUser = new Map<string, string[]>();
+      for (const c of activeCredentials) {
+        const existing = byUser.get(c.userId) ?? [];
+        existing.push(c.platform);
+        byUser.set(c.userId, existing);
+      }
+
+      if (byUser.size === 0) {
+        console.log('[Scheduler] No active credentials found, skipping');
         return;
       }
 
-      const run = await prisma.automationRun.create({
-        data: {
-          status: 'running',
-          platforms: JSON.stringify(credentials.map(c => c.platform)),
-        },
-      });
+      // Run automation for each user
+      for (const [userId, platforms] of byUser) {
+        const run = await prisma.automationRun.create({
+          data: {
+            userId,
+            status: 'running',
+            platforms: JSON.stringify(platforms),
+          },
+        });
 
-      const engine = new AutomationEngine(run.id);
-      await engine.run();
+        const engine = new AutomationEngine(run.id, userId);
+        engine.run().catch(err => {
+          console.error(`[Scheduler] Run error for user ${userId}:`, err);
+        });
+      }
     } catch (err) {
       console.error('[Scheduler] Error during scheduled run:', err);
     }
