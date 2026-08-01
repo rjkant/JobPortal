@@ -1,19 +1,17 @@
 /**
- * Initialise the SQLite database by running CREATE TABLE IF NOT EXISTS
- * for every model in the Prisma schema.
- *
- * This script replaces `prisma db push` at startup because the Prisma CLI
- * in Prisma v7 needs to transpile prisma.config.ts (via jiti), which is
- * unreliable in a stripped production Docker image.
+ * Initialise the database by running CREATE TABLE IF NOT EXISTS for every model.
+ * Works with both local SQLite (file:///...) and Turso cloud (libsql://...).
  *
  * Usage: node scripts/init-db.mjs
  */
 import { createClient } from '@libsql/client';
 
 const url = process.env.DATABASE_URL ?? 'file:///app/prisma/dev.db';
-console.log('[init-db] Using DATABASE_URL:', url);
+const authToken = process.env.DATABASE_AUTH_TOKEN;
 
-const db = createClient({ url });
+console.log('[init-db] Using DATABASE_URL:', url.replace(/authToken=\S+/, 'authToken=***'));
+
+const db = createClient({ url, ...(authToken ? { authToken } : {}) });
 
 const statements = [
   `CREATE TABLE IF NOT EXISTS "User" (
@@ -92,14 +90,14 @@ const statements = [
     ON "JobListing"("userId", "platform", "externalId")`,
 
   `CREATE TABLE IF NOT EXISTS "Application" (
-    "id"            TEXT     NOT NULL PRIMARY KEY,
-    "jobId"         TEXT     NOT NULL,
-    "status"        TEXT     NOT NULL DEFAULT 'applied',
-    "appliedAt"     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "id"             TEXT     NOT NULL PRIMARY KEY,
+    "jobId"          TEXT     NOT NULL,
+    "status"         TEXT     NOT NULL DEFAULT 'applied',
+    "appliedAt"      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "tailoredResume" TEXT,
-    "coverLetter"   TEXT,
-    "notes"         TEXT,
-    "updatedAt"     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "coverLetter"    TEXT,
+    "notes"          TEXT,
+    "updatedAt"      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY ("jobId") REFERENCES "JobListing"("id")
   )`,
 
