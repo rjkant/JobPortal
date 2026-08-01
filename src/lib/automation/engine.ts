@@ -65,10 +65,10 @@ export class AutomationEngine {
       // 4. Build scraper map
       const scrapers: Record<string, BaseScraper> = {};
       const logFn = this.addLog.bind(this);
-      if (platforms.includes('naukri')) scrapers['naukri'] = new NaukriScraper(this.runId, logFn);
-      if (platforms.includes('shine')) scrapers['shine'] = new ShineScraper(this.runId, logFn);
-      if (platforms.includes('monster')) scrapers['monster'] = new MonsterScraper(this.runId, logFn);
-      if (platforms.includes('instahire')) scrapers['instahire'] = new InstaHireScraper(this.runId, logFn);
+      if (platforms.includes('naukri')) scrapers['naukri'] = new NaukriScraper(this.runId, this.userId, logFn);
+      if (platforms.includes('shine')) scrapers['shine'] = new ShineScraper(this.runId, this.userId, logFn);
+      if (platforms.includes('monster')) scrapers['monster'] = new MonsterScraper(this.runId, this.userId, logFn);
+      if (platforms.includes('instahire')) scrapers['instahire'] = new InstaHireScraper(this.runId, this.userId, logFn);
 
       const location = preferredLocs[0] ?? profile.location ?? 'Bangalore';
       const keywords = desiredRoles;

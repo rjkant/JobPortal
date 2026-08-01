@@ -22,7 +22,7 @@ export class InstaHireScraper extends BaseScraper {
         waitUntil: 'networkidle',
         timeout: 30000,
       });
-      await this.randomDelay(1000, 2000);
+      await this.randomDelay(1500, 2500);
 
       const emailField = this.page!.locator('input[type="email"], input[name="email"]').first();
       const hasEmail = await emailField.isVisible({ timeout: 5000 }).catch(() => false);
@@ -33,98 +33,118 @@ export class InstaHireScraper extends BaseScraper {
         await this.page!.locator('input[type="password"]').first().fill(cred.password);
         await this.randomDelay(400, 800);
         await this.page!.locator('button[type="submit"]').first().click();
-        // Wait for SPA navigation (networkidle catches React state changes)
-        await this.page!.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-        await this.randomDelay(1000, 2000);
+        await this.page!.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+        await this.randomDelay(2000, 3000);
       }
 
-      // Verify we are logged in
-      const currentUrl = this.page!.url();
-      await this.log('info', `InstaHire: Post-login URL: ${currentUrl}`);
+      const postLoginUrl = this.page!.url();
+      await this.log('info', `InstaHire: Post-login URL: ${postLoginUrl}`);
 
-      // ── Navigate to opportunities ─────────────────────────────────────────
-      for (const keyword of keywords.slice(0, 2)) {
-        await this.log('info', `InstaHire: Searching "${keyword}"`);
-        await this.page!.goto('https://www.instahyre.com/candidate/opportunities/', {
-          waitUntil: 'networkidle',
-          timeout: 30000,
-        });
-        await this.randomDelay(2000, 3000);
+      // If still on login page, bail
+      if (postLoginUrl.includes('/login')) {
+        await this.log('error', 'InstaHire: Login failed — still on login page');
+        return jobs;
+      }
 
-        const pageTitle = await this.page!.title();
-        await this.log('info', `InstaHire: Page title: "${pageTitle}"`);
+      // ── Navigate to opportunities once (it's personalized, not keyword-based) ─
+      await this.page!.goto('https://www.instahyre.com/candidate/opportunities/', {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
 
-        // Use page.evaluate to inspect real DOM and extract jobs
-        const extracted = await this.page!.evaluate(() => {
-          // Log first 300 chars of body for debugging
-          const bodySnippet = document.body.innerHTML.substring(0, 300);
+      // InstaHire uses AngularJS — wait for $digest cycle to render cards
+      await this.randomDelay(6000, 8000);
 
-          // Try many possible card selectors
-          const cardSelectors = [
-            '.opportunity-card',
-            '.job-card',
-            '[class*="opportunity-card"]',
-            '[class*="OpportunityCard"]',
-            '[class*="job-card"]',
-            '[class*="JobCard"]',
-            '[data-cy*="opportunity"]',
-            '[data-cy*="job"]',
-            '.card',
-          ];
+      const pageTitle = await this.page!.title();
+      await this.log('info', `InstaHire: Page title: "${pageTitle}"`);
 
-          let cards: Element[] = [];
-          for (const sel of cardSelectors) {
+      // Extract jobs using page.evaluate (runs in browser context, sees real AngularJS DOM)
+      const extracted = await this.page!.evaluate(() => {
+        // AngularJS renders ng-repeat items — try many selectors
+        const cardSelectors = [
+          // AngularJS ng-repeat items inside known containers
+          '#opportunity-list > div',
+          '#opportunity-list li',
+          '.opportunity-list > div',
+          '.opportunity-list li',
+          // Generic AngularJS repeat items
+          '[ng-repeat]',
+          // Common class patterns
+          '.opportunity-card',
+          '.opportunity',
+          '.job-card',
+          '.job-listing',
+          // Table rows
+          'table tbody tr',
+          // Any div with an anchor inside it that links to /employer/
+          'div:has(a[href*="/employer/"])',
+          'li:has(a[href*="/employer/"])',
+        ];
+
+        let cards: Element[] = [];
+        let matchedSelector = '';
+
+        for (const sel of cardSelectors) {
+          try {
             const found = Array.from(document.querySelectorAll(sel));
-            if (found.length > 0) { cards = found; break; }
+            if (found.length > 0) {
+              cards = found;
+              matchedSelector = sel;
+              break;
+            }
+          } catch {
+            // some selectors like :has() may not be supported — skip
           }
+        }
 
-          const results = cards.slice(0, 10).map(card => {
-            // Grab first heading-like element
-            const titleEl = card.querySelector('h1, h2, h3, h4, h5, [class*="title"], [class*="role"], [class*="position"], [class*="designation"]');
-            // Grab company — usually the first non-heading text node
-            const companyEl = card.querySelector('[class*="company"], [class*="employer"], [class*="org"], p, span');
-            const linkEl = card.querySelector('a[href]');
+        // Fallback: find all anchors linking to employer pages
+        if (cards.length === 0) {
+          const employerLinks = Array.from(document.querySelectorAll('a[href*="/employer/"]'));
+          cards = employerLinks.map(a => a.closest('div, li, tr') ?? a) as Element[];
+          if (cards.length > 0) matchedSelector = 'a[href*="/employer/"] closest parent';
+        }
 
-            return {
-              title: titleEl?.textContent?.trim() ?? '',
-              company: companyEl?.textContent?.trim() ?? '',
-              href: linkEl?.getAttribute('href') ?? '',
-              sampleHTML: card.outerHTML.substring(0, 400),
-            };
-          });
-
-          return { bodySnippet, cardCount: cards.length, cardSelector: cardSelectors.find(s => document.querySelector(s)), results };
+        const results = cards.slice(0, 15).map(card => {
+          const heading = card.querySelector('h1,h2,h3,h4,[class*="title"],[class*="role"],[class*="position"]');
+          const company = card.querySelector('[class*="company"],[class*="employer"],[class*="org"],p,span');
+          const link    = card.querySelector('a[href]');
+          return {
+            title:      heading?.textContent?.trim() ?? '',
+            company:    company?.textContent?.trim() ?? '',
+            href:       link?.getAttribute('href') ?? '',
+            sampleHTML: card.outerHTML.substring(0, 500),
+          };
         });
 
-        await this.log('info', `InstaHire: Cards found: ${extracted.cardCount} (selector: ${extracted.cardSelector ?? 'none'})`);
-        if (extracted.cardCount === 0) {
-          await this.log('warn', `InstaHire: DOM snippet: ${extracted.bodySnippet.substring(0, 200)}`);
-          continue;
-        }
+        // Also grab first 800 chars of body for debug
+        const bodySnippet = document.body.innerHTML.replace(/\s+/g, ' ').substring(0, 800);
 
-        // Log first card HTML for selector debugging
-        if (extracted.results[0]) {
-          await this.log('info', `InstaHire: First card HTML: ${extracted.results[0].sampleHTML.substring(0, 250)}`);
-        }
+        return { cardCount: cards.length, matchedSelector, results, bodySnippet };
+      });
 
-        for (const item of extracted.results) {
-          if (item.title && item.company) {
-            const href = item.href;
-            const applyUrl = href.startsWith('http') ? href : `https://www.instahyre.com${href}`;
-            const externalId = href.match(/[0-9a-f-]{8,}/)?.[0] ?? Math.random().toString(36).slice(2);
-            jobs.push({
-              externalId,
-              title: item.title,
-              company: item.company,
-              location,
-              skills: [],
-              description: `${item.title} at ${item.company}`,
-              applyUrl,
-            });
-          }
-        }
+      await this.log('info', `InstaHire: Cards found: ${extracted.cardCount} (selector: "${extracted.matchedSelector}")`);
 
-        await this.randomDelay(1500, 2500);
+      if (extracted.cardCount === 0) {
+        await this.log('warn', `InstaHire: Body snippet: ${extracted.bodySnippet.substring(0, 300)}`);
+      } else if (extracted.results[0]) {
+        await this.log('info', `InstaHire: First card HTML: ${extracted.results[0].sampleHTML.substring(0, 300)}`);
+      }
+
+      for (const item of extracted.results) {
+        if (!item.title) continue;
+        const href = item.href;
+        const applyUrl = href.startsWith('http') ? href : `https://www.instahyre.com${href}`;
+        const externalId = href.match(/[0-9a-f-]{8,}/)?.[0] ?? href.replace(/[^a-z0-9]/gi, '') || Math.random().toString(36).slice(2);
+
+        jobs.push({
+          externalId,
+          title:       item.title,
+          company:     item.company || 'Company on InstaHyre',
+          location,
+          skills:      [],
+          description: `${item.title}${item.company ? ` at ${item.company}` : ''} — via InstaHyre`,
+          applyUrl,
+        });
       }
     } catch (err) {
       await this.log('error', `InstaHire scraper error: ${(err as Error).message}`);

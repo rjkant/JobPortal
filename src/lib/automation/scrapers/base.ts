@@ -1,6 +1,6 @@
 import { Browser, BrowserContext, Page, chromium } from 'playwright';
 import { prisma } from '@/lib/db';
-import { decrypt, encrypt } from '@/lib/encryption';
+import { decrypt } from '@/lib/encryption';
 
 export interface ScrapedJob {
   externalId: string;
@@ -21,13 +21,16 @@ export abstract class BaseScraper {
   protected context: BrowserContext | null = null;
   protected page: Page | null = null;
   protected runId: string;
+  protected userId: string;
   protected log: (level: 'info' | 'warn' | 'error', message: string) => Promise<void>;
 
   constructor(
     runId: string,
+    userId: string,
     logFn: (level: 'info' | 'warn' | 'error', message: string) => Promise<void>
   ) {
     this.runId = runId;
+    this.userId = userId;
     this.log = logFn;
   }
 
@@ -38,12 +41,20 @@ export abstract class BaseScraper {
   protected async launchBrowser(): Promise<void> {
     this.browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        // Anti-detection: hide the fact that this is a bot
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
     });
 
-    // Try to restore saved session cookies
+    // Try to restore saved session cookies for this user
     const credential = await prisma.platformCredential.findFirst({
-      where: { platform: this.platform, isActive: true },
+      where: { userId: this.userId, platform: this.platform, isActive: true },
     });
 
     let cookiesToAdd: Parameters<import('playwright').BrowserContext['addCookies']>[0] | null = null;
@@ -57,8 +68,34 @@ export abstract class BaseScraper {
 
     this.context = await this.browser.newContext({
       userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       viewport: { width: 1366, height: 768 },
+      locale: 'en-IN',
+      timezoneId: 'Asia/Kolkata',
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-IN,en;q=0.9',
+      },
+    });
+
+    // Stealth: mask webdriver properties before any page script runs
+    await this.context.addInitScript(() => {
+      // Hide navigator.webdriver
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      // Spoof plugins (real browsers have plugins)
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      });
+      // Spoof languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-IN', 'en'],
+      });
+      // Remove Chrome automation flag
+      // @ts-ignore
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+      // @ts-ignore
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+      // @ts-ignore
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
     });
 
     if (cookiesToAdd) {
@@ -78,7 +115,7 @@ export abstract class BaseScraper {
     try {
       const cookies = await this.context.cookies();
       const credential = await prisma.platformCredential.findFirst({
-        where: { platform: this.platform, isActive: true },
+        where: { userId: this.userId, platform: this.platform, isActive: true },
       });
       if (credential) {
         await prisma.platformCredential.update({
@@ -96,7 +133,7 @@ export abstract class BaseScraper {
 
   protected async getCredential(): Promise<{ email: string; password: string } | null> {
     const cred = await prisma.platformCredential.findFirst({
-      where: { platform: this.platform, isActive: true },
+      where: { userId: this.userId, platform: this.platform, isActive: true },
     });
     if (!cred) return null;
     return { email: cred.email, password: decrypt(cred.password) };
@@ -117,14 +154,13 @@ export abstract class BaseScraper {
     await new Promise(r => setTimeout(r, ms));
   }
 
-  protected parseSalary(salaryStr: string): { min?: number; max?: number } {
-    // "15-25 LPA" → { min: 1500000, max: 2500000 }
+  protected parseSalary(salaryStr: string): { salaryMin?: number; salaryMax?: number } {
     const m = salaryStr.match(/(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)/);
     if (m) {
       const multiplier = salaryStr.toLowerCase().includes('lpa') ? 100000 : 1;
       return {
-        min: Math.round(parseFloat(m[1]) * multiplier),
-        max: Math.round(parseFloat(m[2]) * multiplier),
+        salaryMin: Math.round(parseFloat(m[1]) * multiplier),
+        salaryMax: Math.round(parseFloat(m[2]) * multiplier),
       };
     }
     return {};
