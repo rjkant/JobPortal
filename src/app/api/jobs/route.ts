@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getUserId } from '@/lib/get-user-id';
 
 export async function GET(req: NextRequest) {
   try {
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const { searchParams } = new URL(req.url);
     const page = parseInt(searchParams.get('page') ?? '1');
     const limit = parseInt(searchParams.get('limit') ?? '20');
@@ -11,6 +15,7 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get('search') ?? '';
 
     const where: Record<string, unknown> = {
+      userId,
       matchScore: { gte: minScore },
       ...(platform !== 'all' ? { platform } : {}),
       ...(search ? {

@@ -1,21 +1,23 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getUserId } from '@/lib/get-user-id';
 
 const DEFAULTS: Record<string, string> = {
-  automation_schedule: '0 */6 * * *',     // every 6 hours
+  automation_schedule: '0 */6 * * *',
   max_applications_per_run: '20',
   min_match_score: '60',
   auto_apply_enabled: 'true',
   gemini_model: 'gemini-1.5-flash',
 };
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const rows = await prisma.settings.findMany();
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const rows = await prisma.settings.findMany({ where: { userId } });
     const settings: Record<string, string> = { ...DEFAULTS };
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
+    for (const row of rows) settings[row.key] = row.value;
     return NextResponse.json(settings);
   } catch (err) {
     console.error(err);
@@ -23,26 +25,26 @@ export async function GET() {
   }
 }
 
-export async function PUT(req: Request) {
+export async function PUT(req: NextRequest) {
   try {
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const body: Record<string, string> = await req.json();
 
-    // Upsert each setting
     await Promise.all(
       Object.entries(body).map(([key, value]) =>
         prisma.settings.upsert({
-          where: { key },
+          where: { userId_key: { userId, key } },
           update: { value: String(value) },
-          create: { key, value: String(value) },
+          create: { userId, key, value: String(value) },
         })
       )
     );
 
-    const rows = await prisma.settings.findMany();
+    const rows = await prisma.settings.findMany({ where: { userId } });
     const settings: Record<string, string> = { ...DEFAULTS };
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
+    for (const row of rows) settings[row.key] = row.value;
     return NextResponse.json(settings);
   } catch (err) {
     console.error(err);

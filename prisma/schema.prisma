@@ -10,8 +10,24 @@ datasource db {
   provider = "sqlite"
 }
 
+model User {
+  id           String               @id @default(cuid())
+  name         String
+  email        String               @unique
+  passwordHash String
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  profile      UserProfile?
+  credentials  PlatformCredential[]
+  runs         AutomationRun[]
+  settings     Settings[]
+  jobs         JobListing[]
+}
+
 model UserProfile {
   id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   fullName        String   @default("")
   email           String   @default("")
   phone           String   @default("")
@@ -32,6 +48,8 @@ model UserProfile {
 
 model PlatformCredential {
   id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   platform       String    // naukri | instahire | shine | monster
   email          String
   password       String    // AES-256 encrypted
@@ -40,10 +58,14 @@ model PlatformCredential {
   isActive       Boolean   @default(true)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  @@unique([userId, platform])
 }
 
 model JobListing {
   id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   platform     String
   externalId   String        // platform-specific ID
   title        String
@@ -60,7 +82,7 @@ model JobListing {
   fetchedAt    DateTime      @default(now())
   applications Application[]
 
-  @@unique([platform, externalId])
+  @@unique([userId, platform, externalId])
 }
 
 model Application {
@@ -77,6 +99,8 @@ model Application {
 
 model AutomationRun {
   id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   startedAt   DateTime        @default(now())
   completedAt DateTime?
   status      String          @default("running") // running | completed | failed
@@ -97,7 +121,11 @@ model AutomationLog {
 }
 
 model Settings {
-  id             String  @id @default(cuid())
-  key            String  @unique
-  value          String
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key    String
+  value  String
+
+  @@unique([userId, key])
 }

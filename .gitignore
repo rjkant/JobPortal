@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Route group stub (created accidentally — delete this directory locally)
+src/app/\(main\)/

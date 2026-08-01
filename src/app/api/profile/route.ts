@@ -1,12 +1,16 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getUserId } from '@/lib/get-user-id';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    let profile = await prisma.userProfile.findFirst();
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    let profile = await prisma.userProfile.findUnique({ where: { userId } });
     if (!profile) {
       profile = await prisma.userProfile.create({
-        data: { fullName: '', email: '', phone: '', location: '', currentRole: '' }
+        data: { userId, fullName: '', email: '', phone: '', location: '', currentRole: '' }
       });
     }
     return NextResponse.json({
@@ -21,11 +25,12 @@ export async function GET() {
   }
 }
 
-export async function PUT(req: Request) {
+export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
-    const existing = await prisma.userProfile.findFirst();
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+    const body = await req.json();
     const data = {
       fullName: body.fullName ?? '',
       email: body.email ?? '',
@@ -42,9 +47,11 @@ export async function PUT(req: Request) {
       summary: body.summary ?? '',
     };
 
-    const profile = existing
-      ? await prisma.userProfile.update({ where: { id: existing.id }, data })
-      : await prisma.userProfile.create({ data });
+    const profile = await prisma.userProfile.upsert({
+      where: { userId },
+      update: data,
+      create: { userId, ...data },
+    });
 
     return NextResponse.json({
       ...profile,

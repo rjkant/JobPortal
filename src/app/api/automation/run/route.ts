@@ -1,11 +1,14 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getUserId } from '@/lib/get-user-id';
 
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
-    // Get active credentials to determine which platforms to run
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const credentials = await prisma.platformCredential.findMany({
-      where: { isActive: true },
+      where: { userId, isActive: true },
     });
 
     if (credentials.length === 0) {
@@ -17,18 +20,12 @@ export async function POST() {
 
     const platforms = credentials.map(c => c.platform);
 
-    // Create a new automation run record
     const run = await prisma.automationRun.create({
-      data: {
-        status: 'running',
-        platforms: JSON.stringify(platforms),
-      },
+      data: { userId, status: 'running', platforms: JSON.stringify(platforms) },
     });
 
-    // Kick off the automation engine asynchronously (fire and forget)
-    // Import dynamically to avoid loading Playwright on every request
     import('@/lib/automation/engine').then(({ AutomationEngine }) => {
-      const engine = new AutomationEngine(run.id);
+      const engine = new AutomationEngine(run.id, userId);
       engine.run().catch(err => {
         console.error('Automation engine error:', err);
       });
@@ -41,9 +38,13 @@ export async function POST() {
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const runs = await prisma.automationRun.findMany({
+      where: { userId },
       orderBy: { startedAt: 'desc' },
       take: 20,
     });

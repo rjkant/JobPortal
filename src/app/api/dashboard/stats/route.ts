@@ -1,10 +1,20 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getUserId } from '@/lib/get-user-id';
 import { subDays } from 'date-fns';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const userId = await getUserId(req);
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const weekAgo = subDays(new Date(), 7);
+
+    // Scope all queries to user's jobs
+    const userJobIds = (await prisma.jobListing.findMany({
+      where: { userId },
+      select: { id: true },
+    })).map(j => j.id);
 
     const [
       totalApplications,
@@ -13,33 +23,29 @@ export async function GET() {
       interviews,
       offers,
       recentApplications,
-      platformBreakdown,
       lastRun,
     ] = await Promise.all([
-      prisma.application.count(),
-      prisma.application.count({ where: { appliedAt: { gte: weekAgo } } }),
-      prisma.application.count({ where: { status: 'shortlisted' } }),
-      prisma.application.count({ where: { status: 'interview' } }),
-      prisma.application.count({ where: { status: 'offer' } }),
+      prisma.application.count({ where: { jobId: { in: userJobIds } } }),
+      prisma.application.count({ where: { jobId: { in: userJobIds }, appliedAt: { gte: weekAgo } } }),
+      prisma.application.count({ where: { jobId: { in: userJobIds }, status: 'shortlisted' } }),
+      prisma.application.count({ where: { jobId: { in: userJobIds }, status: 'interview' } }),
+      prisma.application.count({ where: { jobId: { in: userJobIds }, status: 'offer' } }),
       prisma.application.findMany({
+        where: { jobId: { in: userJobIds } },
         take: 10,
         orderBy: { appliedAt: 'desc' },
         include: {
           job: { select: { title: true, company: true, platform: true } },
         },
       }),
-      prisma.application.groupBy({
-        by: ['jobId'],
-        _count: { jobId: true },
-      }),
       prisma.automationRun.findFirst({
-        where: { status: 'completed' },
+        where: { userId, status: 'completed' },
         orderBy: { startedAt: 'desc' },
       }),
     ]);
 
-    // Platform breakdown: join with jobs
     const appJobs = await prisma.application.findMany({
+      where: { jobId: { in: userJobIds } },
       select: { job: { select: { platform: true } } },
     });
     const platformMap: Record<string, number> = {};
@@ -56,7 +62,6 @@ export async function GET() {
         ? Math.round(((shortlisted + interviews + offers) / totalApplications) * 100)
         : 0;
 
-    // Next run: 6 hours after last completed run, or 6h from now
     const lastRunAt = lastRun?.completedAt ?? lastRun?.startedAt ?? new Date();
     const nextRunAt = new Date(lastRunAt.getTime() + 6 * 60 * 60 * 1000).toISOString();
 

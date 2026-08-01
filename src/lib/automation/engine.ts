@@ -8,9 +8,11 @@ import type { BaseScraper, ScrapedJob } from './scrapers/base';
 
 export class AutomationEngine {
   private runId: string;
+  private userId: string;
 
-  constructor(runId: string) {
+  constructor(runId: string, userId: string) {
     this.runId = runId;
+    this.userId = userId;
   }
 
   private async addLog(level: 'info' | 'warn' | 'error', message: string) {
@@ -21,12 +23,11 @@ export class AutomationEngine {
   }
 
   async run(): Promise<void> {
-    const startedAt = new Date();
     try {
       await this.addLog('info', 'Automation run started');
 
       // 1. Load user profile
-      const profile = await prisma.userProfile.findFirst();
+      const profile = await prisma.userProfile.findUnique({ where: { userId: this.userId } });
       if (!profile) {
         await this.addLog('error', 'No user profile found. Please complete your profile first.');
         await this.markFailed(['No user profile configured']);
@@ -43,8 +44,8 @@ export class AutomationEngine {
         return;
       }
 
-      // 2. Load settings
-      const settingsRows = await prisma.settings.findMany();
+      // 2. Load settings (user-scoped)
+      const settingsRows = await prisma.settings.findMany({ where: { userId: this.userId } });
       const settings: Record<string, string> = {};
       for (const row of settingsRows) settings[row.key] = row.value;
       const minScore = parseInt(settings['min_match_score'] ?? '60');
@@ -53,8 +54,10 @@ export class AutomationEngine {
 
       await this.addLog('info', `Settings: min_score=${minScore}, max_apps=${maxApps}, auto_apply=${autoApplyEnabled}`);
 
-      // 3. Load active credentials → determine platforms
-      const credentials = await prisma.platformCredential.findMany({ where: { isActive: true } });
+      // 3. Load active credentials for this user
+      const credentials = await prisma.platformCredential.findMany({
+        where: { userId: this.userId, isActive: true },
+      });
       const platforms = credentials.map(c => c.platform);
 
       await this.addLog('info', `Active platforms: ${platforms.join(', ')}`);
@@ -98,9 +101,9 @@ export class AutomationEngine {
           }
 
           try {
-            // Check if already in DB
+            // Check if already in DB (per user)
             const existing = await prisma.jobListing.findUnique({
-              where: { platform_externalId: { platform, externalId: scrapedJob.externalId } },
+              where: { userId_platform_externalId: { userId: this.userId, platform, externalId: scrapedJob.externalId } },
             });
 
             // Score with Gemini AI
@@ -130,8 +133,9 @@ export class AutomationEngine {
               `  Score: ${matchResult.score}/100 — ${matchResult.reasons[0] ?? 'match'}`
             );
 
-            // Upsert job listing
+            // Upsert job listing (scoped to user)
             const jobData = {
+              userId: this.userId,
               platform,
               externalId: scrapedJob.externalId,
               title: scrapedJob.title,
@@ -197,7 +201,7 @@ export class AutomationEngine {
             await prisma.application.create({
               data: {
                 jobId: jobListing.id,
-                status: applied ? 'applied' : 'applied',
+                status: 'applied',
                 coverLetter,
                 tailoredResume: matchResult.tailoredSummary,
                 notes: `Match score: ${matchResult.score}. ${matchResult.reasons.join('. ')}`,
@@ -216,7 +220,6 @@ export class AutomationEngine {
             errors.push(msg);
           }
 
-          // Small delay between jobs
           await new Promise(r => setTimeout(r, 2000));
         }
       }
