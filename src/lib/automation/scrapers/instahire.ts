@@ -134,7 +134,7 @@ export class InstaHireScraper extends BaseScraper {
         if (!item.title) continue;
         const href = item.href;
         const applyUrl = href.startsWith('http') ? href : `https://www.instahyre.com${href}`;
-        const externalId = href.match(/[0-9a-f-]{8,}/)?.[0] ?? href.replace(/[^a-z0-9]/gi, '') || Math.random().toString(36).slice(2);
+        const externalId = (href.match(/[0-9a-f-]{8,}/)?.[0]) ?? (href.replace(/[^a-z0-9]/gi, '') || Math.random().toString(36).slice(2));
 
         jobs.push({
           externalId,
